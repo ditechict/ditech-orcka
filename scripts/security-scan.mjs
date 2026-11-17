@@ -29,9 +29,20 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BASELINE_PATH = join(ROOT, "security-baseline.json");
 
-const args = process.argv.slice(2);
-const SKIP_REMOTE = args.includes("--skip-remote");
-const UPDATE_BASELINE = args.includes("--update-baseline");
+const args = new Set(process.argv.slice(2));
+const explicitSkipRemote = args.has("--skip-remote");
+const UPDATE_BASELINE = args.has("--update-baseline");
+
+const isCI = process.env.CI === "true";
+const eventName = process.env.GITHUB_EVENT_NAME || "";
+const gitRef = process.env.GITHUB_REF || "";
+const PROTECTED_REFS = new Set([
+  "refs/heads/main",
+  "refs/heads/master",
+  "refs/heads/production",
+]);
+const isProtectedBranch = PROTECTED_REFS.has(gitRef);
+const isPullRequest = eventName === "pull_request" || eventName === "pull_request_target";
 
 // ---------------------------------------------------------------------------
 // Static frontend secret checks
@@ -111,22 +122,56 @@ function deriveScanUrl() {
   if (!existsSync(envPath)) return null;
   const m = readFileSync(envPath, "utf8").match(/^VITE_SUPABASE_URL\s*=\s*(.+)$/m);
   if (!m) return null;
-  // Strip surrounding quotes, trailing whitespace and any trailing slash.
-  const base = m[1].trim().replace(/^["']|["']$/g, "").replace(/\/$/, "");
+  const base = m[1].trim().replace(/^['"]|['"]$/g, "").replace(/\/$/, "");
   return base ? `${base}/functions/v1/security-lint` : null;
 }
 
-async function remoteFindings() {
-  const url = deriveScanUrl();
-  const token = process.env.SECURITY_SCAN_TOKEN ?? "";
-  if (!url || !token) {
+function resolveScanMode() {
+  if (explicitSkipRemote) {
+    if (isProtectedBranch) {
+      console.error("ERROR: --skip-remote is prohibited on protected branches.");
+      process.exit(2);
+    }
+    console.log("INFO: --skip-remote flag detected. Running static security checks only.");
+    return { runRemote: false };
+  }
+
+  const scanUrl = (process.env.SECURITY_SCAN_URL || deriveScanUrl() || "").trim();
+  const scanToken = (process.env.SECURITY_SCAN_TOKEN || "").trim();
+  const hasCredentials = Boolean(scanUrl && scanToken);
+
+  if (hasCredentials) {
+    return { runRemote: true, scanUrl, scanToken };
+  }
+
+  if (isCI && isPullRequest) {
+    console.warn(
+      "WARN: SECURITY_SCAN_URL or SECURITY_SCAN_TOKEN is unset in pull_request context. " +
+        "Falling back to static security checks (--skip-remote)."
+    );
+    return { runRemote: false };
+  }
+
+  console.error("ERROR: remote scan is not configured.");
+  console.error(
+    "Set SECURITY_SCAN_URL and SECURITY_SCAN_TOKEN, or pass --skip-remote for static checks only."
+  );
+  process.exit(2);
+}
+
+async function remoteFindings({ scanUrl, scanToken }) {
+  if (!scanUrl || !scanToken) {
     console.error(
       "ERROR: remote scan is not configured.\n" +
         "Set SECURITY_SCAN_URL and SECURITY_SCAN_TOKEN, or pass --skip-remote for static checks only."
     );
     process.exit(2);
   }
-  const res = await fetch(url, { method: "POST", headers: { "x-scan-token": token } });
+
+  const safeOrigin = new URL(scanUrl).origin;
+  console.log(`Running remote security scan against ${safeOrigin}...`);
+
+  const res = await fetch(scanUrl, { method: "POST", headers: { "x-scan-token": scanToken } });
   if (res.status === 401) {
     console.error("ERROR: scan endpoint rejected the token (401). Check SECURITY_SCAN_TOKEN.");
     process.exit(2);
@@ -151,50 +196,57 @@ function loadBaseline() {
   return JSON.parse(readFileSync(BASELINE_PATH, "utf8"));
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
+async function main() {
+  const mode = resolveScanMode();
+  const findings = [
+    ...staticFindings(),
+    ...(mode.runRemote ? await remoteFindings(mode) : []),
+  ];
 
-const findings = [...staticFindings(), ...(SKIP_REMOTE ? [] : await remoteFindings())];
+  if (UPDATE_BASELINE) {
+    const previous = loadBaseline();
+    const reasons = new Map(previous.accepted.map((a) => [a.id, a.reason]));
+    const baseline = {
+      $comment:
+        "Findings listed here are reviewed and accepted. The CI security scan fails only on NEW warn/error findings. Regenerate with: node scripts/security-scan.mjs --update-baseline (then fill in accepted reasons)",
+      accepted: findings.map((f) => ({
+        id: idOf(f),
+        level: f.level,
+        title: f.title,
+        reason: reasons.get(idOf(f)) ?? "TODO: document why this is accepted",
+      })),
+    };
+    writeFileSync(BASELINE_PATH, JSON.stringify(baseline, null, 2) + "\n");
+    console.log(`Baseline updated: ${baseline.accepted.length} finding(s) written to security-baseline.json`);
+    process.exit(0);
+  }
 
-if (UPDATE_BASELINE) {
-  const previous = loadBaseline();
-  const reasons = new Map(previous.accepted.map((a) => [a.id, a.reason]));
-  const baseline = {
-    $comment:
-      "Findings listed here are reviewed and accepted. The CI security scan fails only on NEW warn/error findings. Regenerate with: node scripts/security-scan.mjs --update-baseline (then fill in reasons).",
-    accepted: findings.map((f) => ({
-      id: idOf(f),
-      level: f.level,
-      title: f.title,
-      reason: reasons.get(idOf(f)) ?? "TODO: document why this is accepted",
-    })),
-  };
-  writeFileSync(BASELINE_PATH, JSON.stringify(baseline, null, 2) + "\n");
-  console.log(`Baseline updated: ${baseline.accepted.length} finding(s) written to security-baseline.json`);
-  process.exit(0);
+  const accepted = new Set(loadBaseline().accepted.map((a) => a.id));
+  const newFindings = findings.filter((f) => !accepted.has(idOf(f)));
+  const failing = newFindings.filter((f) => f.level === "warn" || f.level === "error");
+
+  console.log(`\nSecurity scan results`);
+  console.log(`  total findings:    ${findings.length}`);
+  console.log(`  accepted baseline: ${findings.length - newFindings.length}`);
+  console.log(`  new findings:      ${newFindings.length}`);
+
+  for (const f of newFindings) {
+    console.log(`\n  [${f.level.toUpperCase()}] ${f.title} (${idOf(f)})`);
+    console.log(`    ${f.detail}`);
+  }
+
+  if (failing.length > 0) {
+    console.error(
+      `\nFAILED: ${failing.length} new warn/error finding(s). ` +
+        `Fix them, or review and accept them via: node scripts/security-scan.mjs --update-baseline`
+    );
+    process.exit(1);
+  }
+
+  console.log("\nPASSED: no new warn/error findings.");
 }
 
-const accepted = new Set(loadBaseline().accepted.map((a) => a.id));
-const newFindings = findings.filter((f) => !accepted.has(idOf(f)));
-const failing = newFindings.filter((f) => f.level === "warn" || f.level === "error");
-
-console.log(`\nSecurity scan results`);
-console.log(`  total findings:    ${findings.length}`);
-console.log(`  accepted baseline: ${findings.length - newFindings.length}`);
-console.log(`  new findings:      ${newFindings.length}`);
-
-for (const f of newFindings) {
-  console.log(`\n  [${f.level.toUpperCase()}] ${f.title} (${idOf(f)})`);
-  console.log(`    ${f.detail}`);
-}
-
-if (failing.length > 0) {
-  console.error(
-    `\nFAILED: ${failing.length} new warn/error finding(s). ` +
-      `Fix them, or review and accept them via: node scripts/security-scan.mjs --update-baseline`
-  );
+main().catch((err) => {
+  console.error("FATAL: Security scan failed with an unexpected error:", err.message);
   process.exit(1);
-}
-
-console.log("\nPASSED: no new warn/error findings.");
+});
