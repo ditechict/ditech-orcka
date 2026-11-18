@@ -499,6 +499,10 @@ export type Database = {
     }
     Functions: {
       cleanup_rate_limits: { Args: never; Returns: undefined }
+      consume_workflow_advisor_rate_limit: {
+        Args: { p_identifier: string }
+        Returns: boolean
+      }
       is_admin: { Args: { _user_id: string }; Returns: boolean }
       security_lint: { Args: never; Returns: Json }
     }

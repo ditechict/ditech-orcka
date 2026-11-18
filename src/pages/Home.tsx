@@ -14,6 +14,7 @@ import { shopHref } from "@/config/nav";
 // D1: Below-the-fold section lazy-loaded to reduce initial JS.
 const ShopTeaser = lazy(() => import("@/components/sections/ShopTeaser"));
 const HomeAsk = lazy(() => import("@/components/sections/HomeAsk"));
+const WorkflowAdvisor = lazy(() => import("@/components/sections/WorkflowAdvisor"));
 
 const services = [
   { icon: Bot, title: "AI Automation", description: "Intelligent systems that quietly do the tedious work.", href: "/services#ai-automation" },
@@ -91,6 +92,10 @@ const Home = () => {
 
       <Suspense fallback={<div className="min-h-[260px]" aria-hidden="true" />}>
         <HomeAsk />
+      </Suspense>
+
+      <Suspense fallback={<div className="min-h-[420px]" aria-hidden="true" />}>
+        <WorkflowAdvisor />
       </Suspense>
 
 

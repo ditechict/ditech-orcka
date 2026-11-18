@@ -8,6 +8,13 @@
       "when": 1790342952441,
       "tag": "0000_restore_new_user_profile_trigger",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1795010967672,
+      "tag": "0001_add_workflow_advisor_ip_limit",
+      "breakpoints": true
     }
   ]
 }
