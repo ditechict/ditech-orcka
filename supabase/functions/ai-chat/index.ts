@@ -43,25 +43,12 @@ const ProductSchema = z.object({
 const MAX_PRODUCTS = 50;
 const MAX_CONTEXT_BYTES = 25_000;
 
-const PreviewConfigSchema = z.object({
-  bot_name: z.string().max(80).optional(),
-  tone: z.enum(["professional", "warm", "concise", "consultative"]).optional(),
-  response_length: z.enum(["short", "medium", "long"]).optional(),
-  system_instructions: z.string().max(20000).optional(),
-  guardrails: z.string().max(5000).optional(),
-  always_cta: z.boolean().optional(),
-  model: z.string().max(80).optional(),
-  temperature: z.number().min(0).max(2).optional(),
-  max_tokens: z.number().int().min(1).max(8000).optional(),
-  use_product_context: z.boolean().optional(),
-});
-
 const RequestSchema = z.object({
   messages: z.array(MessageSchema)
     .min(1, "At least one message is required")
     .max(50, "Too many messages in conversation"),
   sessionId: z.string().min(6).max(80).optional(),
-  previewConfig: PreviewConfigSchema.optional(),
+  preview: z.boolean().optional(),
   context: z
     .object({
       products: z.array(ProductSchema).max(200).optional(),
@@ -184,13 +171,13 @@ serve(async (req) => {
       throw validationError;
     }
 
-    const { messages, context, sessionId, previewConfig } = validatedData;
+    const { messages, context, sessionId, preview } = validatedData;
 
-    // ---- Load the published bot configuration (admin-tunable) -------------
-    // Admin preview: a draft config supplied with the request is honored only
-    // when the caller's JWT belongs to an admin — it is never logged.
-    let isPreview = false;
-    if (previewConfig) {
+    // ---- Load the bot configuration from trusted storage -------------------
+    // Preview requests may select the saved draft, but never supply prompt
+    // instructions or other model settings in the request body.
+    const isPreview = preview === true;
+    if (isPreview) {
       const token = req.headers.get("authorization")?.replace("Bearer ", "") ?? "";
       const { data: userData } = await supabase.auth.getUser(token);
       const userId = userData?.user?.id;
@@ -209,11 +196,25 @@ serve(async (req) => {
           status: 403, headers: { ...getCorsHeaders(req), "Content-Type": "application/json" },
         });
       }
-      isPreview = true;
     }
 
     let config: Record<string, unknown> | null = null;
-    if (!isPreview) {
+    if (isPreview) {
+      const { data, error } = await supabase
+        .from("bot_config")
+        .select("*")
+        .eq("status", "draft")
+        .order("version", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) {
+        return new Response(JSON.stringify({ error: "Save a draft before previewing." }), {
+          status: 400, headers: { ...getCorsHeaders(req), "Content-Type": "application/json" },
+        });
+      }
+      config = data;
+    } else {
       const { data } = await supabase
         .from("bot_config")
         .select("*")
@@ -222,8 +223,6 @@ serve(async (req) => {
         .limit(1)
         .maybeSingle();
       config = data;
-    } else {
-      config = previewConfig as Record<string, unknown>;
     }
 
     const botName = (config?.bot_name as string) || "Orcka";

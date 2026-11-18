@@ -205,6 +205,20 @@ const OrckaAdmin = () => {
     setPreviewLoading(true);
     setPreviewReply("");
     try {
+      // Persist the current editor values as a draft first. The edge function
+      // loads preview settings from this admin-only table, never from the body.
+      const existingDraft = versions.find((version) => version.status === "draft");
+      if (existingDraft) {
+        const { error } = await db.from("bot_config").update(form).eq("id", existingDraft.id);
+        if (error) throw error;
+      } else {
+        const { error } = await db.from("bot_config").insert({
+          ...form,
+          status: "draft",
+          version: (versions[0]?.version ?? 0) + 1,
+        });
+        if (error) throw error;
+      }
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData.session?.access_token;
       const response = await fetch(
@@ -217,7 +231,7 @@ const OrckaAdmin = () => {
           },
           body: JSON.stringify({
             messages: [{ role: "user", content: previewInput.trim() }],
-            previewConfig: { ...form },
+            preview: true,
           }),
         }
       );
