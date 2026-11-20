@@ -439,7 +439,7 @@ serve(async (req) => {
       });
     }
 
-    // Tee the stream so we can persist the assistant reply without delaying it.
+    // Forward the original stream while capturing complete SSE data lines.
     if (!logId) {
       return new Response(response.body, {
         headers: { ...getCorsHeaders(req), "Content-Type": "text/event-stream" },
@@ -447,31 +447,39 @@ serve(async (req) => {
     }
 
     const decoder = new TextDecoder();
+    let pendingLine = "";
     let assistantText = "";
+
+    function captureLine(line: string) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data: ")) return;
+      const payload = trimmed.slice(6);
+      if (payload === "[DONE]") return;
+      try {
+        const parsed = JSON.parse(payload);
+        const delta = parsed?.choices?.[0]?.delta?.content;
+        if (typeof delta === "string") {
+          assistantText += delta.slice(0, 10000 - assistantText.length);
+        }
+      } catch {
+        // Ignore malformed data lines while forwarding the original bytes.
+      }
+    }
+
     const capture = new TransformStream({
       transform(chunk, controller) {
         controller.enqueue(chunk);
-        const text = decoder.decode(chunk, { stream: true });
-        for (const line of text.split("\n")) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data: ")) continue;
-          const payload = trimmed.slice(6);
-          if (payload === "[DONE]") continue;
-          try {
-            const parsed = JSON.parse(payload);
-            const delta = parsed.choices?.[0]?.delta?.content;
-            if (delta) assistantText += delta;
-          } catch {
-            // partial chunk — ignore
-          }
-        }
+        const lines = (pendingLine + decoder.decode(chunk, { stream: true })).split("\n");
+        pendingLine = lines.pop() ?? "";
+        for (const line of lines) captureLine(line);
       },
       async flush() {
+        // Match the browser parsers and capture only newline-terminated data lines.
         if (!assistantText) return;
         const { error } = await supabase.from("chat_log_messages").insert({
           log_id: logId,
           role: "assistant",
-          content: assistantText.slice(0, 10000),
+          content: assistantText,
         });
         if (error) console.error("assistant log insert error:", error.message);
       },
