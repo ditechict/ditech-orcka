@@ -8,6 +8,27 @@ import { Textarea } from "@/components/ui/textarea";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { supabase } from "@/integrations/supabase/client";
 
+const workflowExamples = [
+  {
+    label: "Retail orders",
+    industry: "Retail",
+    currentTools: "Shopify, spreadsheets, email",
+    workflow: "When an order comes in, a team member copies the order details into a spreadsheet, checks stock in a separate system, and emails the customer if an item is delayed. During busy periods, updates are missed and staff spend time reconciling the spreadsheet with the shop.",
+  },
+  {
+    label: "Client enquiries",
+    industry: "Professional services",
+    currentTools: "Email, web forms, calendar",
+    workflow: "New client enquiries arrive through our website and shared inbox. Someone reads each one, identifies the service requested, asks for missing details, and forwards it to the right person. Follow-ups are tracked manually, so enquiries can wait several days before receiving a response.",
+  },
+  {
+    label: "Appointment reminders",
+    industry: "Service business",
+    currentTools: "Booking calendar, SMS, spreadsheets",
+    workflow: "Staff review tomorrow's appointments each afternoon, copy the customer details into a message, and send reminders one at a time. If someone cancels, the open slot is shared manually with people who asked for an earlier appointment, and the calendar is updated in more than one place.",
+  },
+];
+
 const WorkflowAdvisor = () => {
   const [industry, setIndustry] = useState("");
   const [currentTools, setCurrentTools] = useState("");
@@ -15,6 +36,14 @@ const WorkflowAdvisor = () => {
   const [recommendation, setRecommendation] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const loadExample = (example: (typeof workflowExamples)[number]) => {
+    setIndustry(example.industry);
+    setCurrentTools(example.currentTools);
+    setWorkflow(example.workflow);
+    setRecommendation("");
+    setError("");
+  };
 
   const advise = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -74,7 +103,17 @@ const WorkflowAdvisor = () => {
               </div>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="advisor-workflow">What happens in the process?</Label>
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                <Label htmlFor="advisor-workflow">What happens in the process?</Label>
+                <span className="text-xs text-muted-foreground">Or start with an example</span>
+              </div>
+              <div className="flex flex-wrap gap-2" role="group" aria-label="Load a workflow example">
+                {workflowExamples.map((example) => (
+                  <Button key={example.label} type="button" size="sm" variant="outline" onClick={() => loadExample(example)}>
+                    {example.label}
+                  </Button>
+                ))}
+              </div>
               <Textarea
                 id="advisor-workflow"
                 value={workflow}
