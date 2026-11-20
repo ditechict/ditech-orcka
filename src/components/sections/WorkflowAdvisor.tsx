@@ -35,6 +35,7 @@ const WorkflowAdvisor = () => {
   const [workflow, setWorkflow] = useState("");
   const [recommendation, setRecommendation] = useState("");
   const [error, setError] = useState("");
+  const [signInRequired, setSignInRequired] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const loadExample = (example: (typeof workflowExamples)[number]) => {
@@ -50,6 +51,7 @@ const WorkflowAdvisor = () => {
     if (busy) return;
     setBusy(true);
     setError("");
+    setSignInRequired(false);
     setRecommendation("");
     try {
       const { data, error: invokeError } = await supabase.functions.invoke("workflow-advisor", {
@@ -59,7 +61,10 @@ const WorkflowAdvisor = () => {
         let message = "Recommendations are temporarily unavailable. Please try again.";
         if ("context" in invokeError && invokeError.context instanceof Response) {
           const body = await invokeError.context.clone().json().catch(() => null);
-          if (typeof body?.error === "string") message = body.error;
+          if (invokeError.context.status === 401) {
+            message = "Please sign in to use the workflow advisor.";
+            setSignInRequired(true);
+          } else if (typeof body?.error === "string") message = body.error;
         }
         setError(message);
         return;
@@ -84,8 +89,11 @@ const WorkflowAdvisor = () => {
             <span className="kicker inline-flex items-center gap-2"><Sparkles className="h-4 w-4" aria-hidden="true" /> Workflow advisor</span>
             <h2 className="serif mt-4 text-4xl md:text-5xl brass-rule">Find the quiet work your systems can take on.</h2>
             <p className="mt-6 max-w-lg leading-relaxed text-muted-foreground">
-              Describe one process that takes too much time. Get practical automation opportunities and a sensible place to start — no sign-in required.
+              Describe one process that takes too much time. Sign in to receive practical automation opportunities and a sensible place to start.
             </p>
+            <Button asChild variant="link" className="mt-2 h-auto px-0">
+              <Link to="/auth">Sign in to use the advisor <ArrowRight className="h-4 w-4" /></Link>
+            </Button>
             <p className="mt-5 text-sm text-muted-foreground">
               Please leave out passwords, personal records, and confidential customer information.
             </p>
@@ -138,7 +146,11 @@ const WorkflowAdvisor = () => {
         {(recommendation || error || busy) && (
           <div className="mt-12 border-t border-border pt-8" aria-live="polite" aria-busy={busy}>
             {busy && <p className="text-sm text-muted-foreground">Considering the handoffs, repetitive steps, and tools in your process…</p>}
-            {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}{signInRequired && <> <Link to="/auth" className="underline underline-offset-2">Sign in</Link>.</>}
+              </p>
+            )}
             {recommendation && (
               <div className="max-w-3xl">
                 <h3 className="serif mb-5 text-2xl">A considered place to begin</h3>

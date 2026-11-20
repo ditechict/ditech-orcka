@@ -121,6 +121,14 @@ Deno.serve(async (req) => {
     }
 
     const service = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+    const authToken = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+    const { data: authData, error: authError } = authToken
+      ? await service.auth.getUser(authToken)
+      : { data: null, error: new Error("missing") };
+    if (authError || !authData?.user) {
+      return jsonResponse(req, 401, { error: "Please sign in to use the workflow advisor." });
+    }
+
     const identifier = await hashIdentifier(requestIp(req));
     const { data: allowed, error: limitError } = await service.rpc("consume_workflow_advisor_rate_limit", {
       p_identifier: identifier,
